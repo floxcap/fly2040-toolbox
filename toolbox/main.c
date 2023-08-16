@@ -280,18 +280,6 @@ static void _show_errors()
 	}
 }
 
-void fw_update()
-{
-	gfx_clear_partial_grey(0x1B, 0, 1256);
-	gfx_con_setpos(0, 0);
-
-	hwfly_update_fw();
-
-	gfx_printf("\n\nPress any key...\n");
-	msleep(500);
-	btn_wait();
-}
-
 void fw_dump()
 {
 	gfx_clear_partial_grey(0x1B, 0, 1256);
@@ -474,27 +462,6 @@ void train_data_restore()
 	btn_wait();
 }
 
-void train_data_reset()
-{
-	gfx_clear_partial_grey(0x1B, 0, 1256);
-	gfx_con_setpos(0, 0);
-
-	gfx_printf("Sending Reset Train Data command\n");
-
-	if (!hwfly_reset_train_data())
-	{
-		gfx_printf("Train data reset. Next boot will retrain.\n");
-	}
-	else
-	{
-		EPRINTF("Train data reset failed.\n");
-	}
-	gfx_printf("Press any key...\n");
-
-	msleep(500);
-	btn_wait();
-}
-
 void session_info()
 {
 	gfx_clear_partial_grey(0x1B, 0, 1256);
@@ -579,30 +546,140 @@ void deep_sleep()
 	btn_wait();
 }
 
+void fw_switch()
+{
+    uint32_t reset_cmd[64] = {0x6db92148, 0xFFFFFFFF, 0xFFFFFFFF};
+    gfx_clear_partial_grey(0x1B, 0, 1256);
+    gfx_con_setpos(0, 0);
+
+    gfx_printf("Writing the \"firware switch\" command\n");
+
+    emmc_initialize(false);
+    sdmmc_storage_set_mmc_partition(&emmc_storage, EMMC_BOOT0);
+    sdmmc_storage_write(&emmc_storage, 1, 1, reset_cmd);
+    sdmmc_storage_end(&emmc_storage);
+    gfx_printf("Done! Now reboot the console to apply\n\n");
+    gfx_printf("Press any key\n");
+    msleep(500);
+    btn_wait();
+}
+
+void fw_update()
+{
+    gfx_clear_partial_grey(0x1B, 0, 1256);
+    gfx_con_setpos(0, 0);
+
+    uint32_t flash_cmd[64] = {0x6db92148};
+
+    gfx_printf("Reading update.bin on sdcard\n");
+    sd_mount();
+    u32 payload_size;
+    uint8_t *payload = sd_file_read("update.bin", &payload_size);
+    sd_end();
+
+    if (!payload)
+    {
+        gfx_printf("update.bin not found!\n");
+        goto fwout;
+    }
+
+    payload_size = ALIGN(payload_size, 512);
+
+    if (payload_size > 0x3FE00)
+    {
+        gfx_printf("update.bin is too big!\n");
+        goto fwout;
+    }
+
+    emmc_initialize(false);
+    sdmmc_storage_set_mmc_partition(&emmc_storage, EMMC_BOOT0);
+    sdmmc_storage_write(&emmc_storage, 0x3C0000 / 512, payload_size / 512, payload);
+    flash_cmd[1] = 0x1E00;
+    flash_cmd[2] = payload_size / 512;
+    sdmmc_storage_write(&emmc_storage, 1, 1, flash_cmd);
+    sdmmc_storage_end(&emmc_storage);
+    gfx_printf("Flashed! Now reboot the console to apply\n\n");
+
+    fwout:
+    gfx_printf("Press any key\n");
+    msleep(500);
+    btn_wait();
+}
+
+typedef struct fw_info
+{
+    uint32_t signature;
+    uint32_t fw_major;
+    uint32_t fw_minor;
+    uint32_t sdloader_hash;
+    uint32_t firmware_hash;
+    uint32_t fuse_count;
+    uint32_t start_offset;
+    uint32_t step_offset;
+    uint16_t offset_data[];
+} fw_info;
+
+void fw_info_print()
+{
+    gfx_clear_partial_grey(0x1B, 0, 1256);
+    gfx_con_setpos(0, 0);
+
+    uint8_t info[0x200];
+
+    gfx_printf("Reading firmware info...\n");
+    emmc_initialize(false);
+    sdmmc_storage_set_mmc_partition(&emmc_storage, EMMC_BOOT0);
+    sdmmc_storage_read(&emmc_storage, 0x1FFF, 1, info);
+    sdmmc_storage_end(&emmc_storage);
+
+    fw_info * fw = (fw_info*)(info);
+    if (fw->signature == 0x9cabe959)
+    {
+        gfx_printf("Version: %d.%d\n", fw->fw_major, fw->fw_minor);
+        gfx_printf("FW  hash: 0x%08X\n", fw->firmware_hash);
+        gfx_printf("IPL hash: 0x%04X\n", fw->sdloader_hash);
+        gfx_printf("Fuse count: %d\n\n", fw->fuse_count);
+    }
+
+    gfx_printf("Press any key\n");
+    msleep(500);
+    btn_wait();
+}
+
+void train_data_reset()
+{
+    uint32_t reset_cmd[64] = {0x515205c5};
+    gfx_clear_partial_grey(0x1B, 0, 1256);
+    gfx_con_setpos(0, 0);
+
+    gfx_printf("Writing the \"reset chip\" command\n");
+
+    emmc_initialize(false);
+    sdmmc_storage_set_mmc_partition(&emmc_storage, EMMC_BOOT0);
+    sdmmc_storage_write(&emmc_storage, 1, 1, reset_cmd);
+    sdmmc_storage_end(&emmc_storage);
+    gfx_printf("Done! Now reboot the console to apply\n\n");
+    gfx_printf("Press any key\n");
+    msleep(500);
+    btn_wait();
+}
+
 power_state_t STATE_POWER_OFF           = POWER_OFF_RESET;
 
 ment_t ment_top[] = {
-	MDEF_CAPTION("--- Firmware ------", 0xFFDAFF7F),
-	MDEF_HANDLER("Update", fw_update),
-	MDEF_HANDLER("Backup", fw_dump),
-	MDEF_CAPTION("--- SD Loader -----", 0xFFDAFF7F),
-	MDEF_HANDLER("Update", sdloader_update),
-	MDEF_HANDLER("Backup", sdloader_dump),
-	MDEF_CAPTION("--- Train data ----", 0xFFDAFF7F),
-	MDEF_HANDLER("Show stored data", train_data_show),
-	MDEF_HANDLER("Backup", train_data_backup),
-	MDEF_HANDLER("Restore", train_data_restore),
-	MDEF_HANDLER("Reset", train_data_reset),
-	MDEF_CAPTION("--- Misc. ---------", 0xFFDAFF7F),
-	MDEF_HANDLER("Glitch Session Info", session_info),
-	MDEF_HANDLER("Enter Deep Sleep", deep_sleep),
-	MDEF_CAPTION("-------------------", 0xFFDAFF7F),
-	MDEF_HANDLER("Back to hekate", hekate_launch),
-	MDEF_HANDLER_EX("Power off", &STATE_POWER_OFF, power_set_state_ex),
-	MDEF_END()
+        MDEF_CAPTION("--- Firmware ------", 0xFFDAFF7F),
+        MDEF_HANDLER("Info", fw_info_print),
+        MDEF_HANDLER("Update", fw_update),
+        MDEF_HANDLER("Rollback", fw_switch),
+        MDEF_CAPTION("--- Train data ----", 0xFFDAFF7F),
+        MDEF_HANDLER("Reset", train_data_reset),
+        MDEF_CAPTION("-------------------", 0xFFDAFF7F),
+        MDEF_HANDLER("Back to hekate", hekate_launch),
+        MDEF_HANDLER_EX("Power off", &STATE_POWER_OFF, power_set_state_ex),
+        MDEF_END()
 };
 
-menu_t menu_top = { ment_top, "HWFLY Toolbox v1.1.1", 0, 0 };
+menu_t menu_top = { ment_top, "FLY2040 Toolbox v1.0.0", 0, 0 };
 
 extern void pivot_stack(u32 stack_top);
 
